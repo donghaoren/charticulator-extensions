@@ -38,6 +38,11 @@ namespace powerbi.extensibility.visual {
     return a1.every(i => s2.has(i)) && a2.every(i => s1.has(i));
   }
 
+  interface RowInfo {
+    highlight: boolean;
+    index: number;
+  }
+
   class CharticulatorPowerBIVisual {
     protected host: IVisualHost;
     protected selectionManager: ISelectionManager;
@@ -99,102 +104,110 @@ namespace powerbi.extensibility.visual {
       options: VisualUpdateOptions
     ): {
       dataset: CharticulatorContainer.Dataset.Dataset;
-      rowInfo: Map<
-        CharticulatorContainer.Dataset.Row,
-        { highlight: boolean; index: number }
-      >;
+      rowInfo: Map<CharticulatorContainer.Dataset.Row, RowInfo>;
     } {
+      console.log("getDataset", options);
+      // If any of the tables doesn't exist, return
       if (
         !options.dataViews ||
-        !options.dataViews[0] ||
-        !options.dataViews[0].categorical ||
-        !options.dataViews[0].categorical.categories ||
-        !options.dataViews[0].categorical.categories[0]
+        !this.template.tables.every(
+          (t, i) =>
+            !!options.dataViews[i] &&
+            !!options.dataViews[i].categorical &&
+            !!options.dataViews[i].categorical.categories &&
+            !!options.dataViews[i].categorical.categories[0]
+        )
       ) {
         return null;
       }
-      const dv = options.dataViews[0];
-      const categorical = dv.categorical;
-      const category = categorical.categories[0];
-      const valueColumns = categorical.values;
 
-      // Match columns
-      const columnToValues: {
-        [name: string]: {
-          values: CharticulatorContainer.Specification.DataValue[];
-          highlights: boolean[];
-        };
-      } = {};
-      const columns = this.template.tables[0].columns as PowerBIColumn[];
-      for (const column of columns) {
-        let found = false;
-        if (valueColumns != null) {
-          for (const v of valueColumns) {
-            if (v.source.roles[column.powerBIName]) {
-              columnToValues[column.powerBIName] = {
-                values: CharticulatorContainer.Dataset.convertColumnType(
-                  v.values.map(x => (x == null ? null : x.valueOf())),
-                  column.type
-                ),
-                highlights: v.values.map((value, i) => {
-                  return v.highlights
-                    ? v.highlights[i] != null && value != null
-                      ? v.highlights[i].valueOf() == value.valueOf()
-                      : false
-                    : false;
-                })
-              };
-              found = true;
+      const rowInfo = new Map<CharticulatorContainer.Dataset.Row, RowInfo>();
+
+      const tables = this.template.tables.map((table, index) => {
+        const tableName = `t${index}`;
+        const columns = table.columns as PowerBIColumn[];
+        const dv = options.dataViews[index];
+        const categorical = dv.categorical;
+        const category = categorical.categories[0];
+        const valueColumns = categorical.values;
+
+        // Match columns
+        const columnToValues: {
+          [name: string]: {
+            values: CharticulatorContainer.Specification.DataValue[];
+            highlights: boolean[];
+          };
+        } = {};
+        for (const column of columns) {
+          let found = false;
+          if (valueColumns != null) {
+            for (const v of valueColumns) {
+              if (v.source.roles[column.powerBIName]) {
+                columnToValues[column.powerBIName] = {
+                  values: CharticulatorContainer.Dataset.convertColumnType(
+                    v.values.map(x => (x == null ? null : x.valueOf())),
+                    column.type
+                  ),
+                  highlights: v.values.map((value, i) => {
+                    return v.highlights
+                      ? v.highlights[i] != null && value != null
+                        ? v.highlights[i].valueOf() == value.valueOf()
+                        : false
+                      : false;
+                  })
+                };
+                found = true;
+              }
             }
           }
-        }
-        if (!found) {
-          return null;
-        }
-      }
-
-      const rowInfo = new Map<
-        CharticulatorContainer.Dataset.Row,
-        { highlight: boolean; index: number }
-      >();
-      const dataset: CharticulatorContainer.Dataset.Dataset = {
-        name: "Dataset",
-        tables: [
-          {
-            name: "default",
-            columns: columns.map(column => {
-              return {
-                name: column.powerBIName,
-                type: column.type,
-                metadata: column.metadata
-              };
-            }),
-            rows: category.values
-              .map((_, i) => {
-                const obj: CharticulatorContainer.Dataset.Row = {
-                  _id: "ID" + i.toString()
-                };
-                let allHighlighted = true;
-                for (const column of columns) {
-                  const valueColumn = columnToValues[column.powerBIName];
-                  const value = valueColumn.values[i];
-                  if (value == null) {
-                    return null;
-                  }
-                  obj[column.powerBIName] = value;
-                  if (!valueColumn.highlights[i]) {
-                    allHighlighted = false;
-                  }
-                }
-                rowInfo.set(obj, {
-                  highlight: allHighlighted,
-                  index: i
-                });
-                return obj;
-              })
-              .filter(x => x != null)
+          if (!found) {
+            // Some of the column doesn't exist, exit
+            return null;
           }
-        ]
+        }
+
+        const result: CharticulatorContainer.Dataset.Table = {
+          name: tableName,
+          columns: columns.map(column => {
+            return {
+              name: column.powerBIName,
+              type: column.type,
+              metadata: column.metadata
+            };
+          }),
+          rows: category.values
+            .map((_, i) => {
+              const obj: CharticulatorContainer.Dataset.Row = {
+                _id: "ID" + i.toString()
+              };
+              let allHighlighted = true;
+              for (const column of columns) {
+                const valueColumn = columnToValues[column.powerBIName];
+                const value = valueColumn.values[i];
+                if (value == null) {
+                  return null;
+                }
+                obj[column.powerBIName] = value;
+                if (!valueColumn.highlights[i]) {
+                  allHighlighted = false;
+                }
+              }
+              rowInfo.set(obj, {
+                highlight: allHighlighted,
+                index: i
+              });
+              return obj;
+            })
+            .filter(x => x != null)
+        };
+        return result;
+      });
+      if (!tables.every(x => x != null)) {
+        return null;
+      }
+      const dataset = {
+        name: "default",
+        tables
       };
       return { dataset, rowInfo };
     }
@@ -266,17 +279,16 @@ namespace powerbi.extensibility.visual {
             this.divChart.innerHTML = "";
             this.chartTemplate.reset();
 
-            const columns = this.template.tables[0].columns as PowerBIColumn[];
-            this.chartTemplate.assignTable(
-              this.template.tables[0].name,
-              "default"
-            );
-            for (const column of columns) {
-              this.chartTemplate.assignColumn(
-                this.template.tables[0].name,
-                column.name,
-                column.powerBIName
-              );
+            for (const [index, table] of this.template.tables.entries()) {
+              const columns = table.columns as PowerBIColumn[];
+              this.chartTemplate.assignTable(table.name, `t${index}`);
+              for (const column of columns) {
+                this.chartTemplate.assignColumn(
+                  table.name,
+                  column.name,
+                  column.powerBIName
+                );
+              }
             }
             const instance = this.chartTemplate.instantiate(dataset);
             const { chart } = instance;
@@ -309,17 +321,22 @@ namespace powerbi.extensibility.visual {
 
             // Make selection ids:
             const selectionIDs = [];
-            const selectionID2RowIndex = new WeakMap<ISelectionId, number>();
-            dataset.tables[0].rows.forEach((row, i) => {
-              const selectionID = this.host
-                .createSelectionIdBuilder()
-                .withCategory(
-                  options.dataViews[0].categorical.categories[0],
-                  getDatasetResult.rowInfo.get(row).index
-                )
-                .createSelectionId();
-              selectionIDs.push(selectionID);
-              selectionID2RowIndex.set(selectionID, i);
+            const selectionID2RowIndex = new WeakMap<
+              ISelectionId,
+              [string, number]
+            >();
+            dataset.tables.forEach((table, tableIndex) => {
+              table.rows.forEach((row, i) => {
+                const selectionID = this.host
+                  .createSelectionIdBuilder()
+                  .withCategory(
+                    options.dataViews[tableIndex].categorical.categories[0],
+                    getDatasetResult.rowInfo.get(row).index
+                  )
+                  .createSelectionId();
+                selectionIDs.push(selectionID);
+                selectionID2RowIndex.set(selectionID, [`t${tableIndex}`, i]);
+              });
             });
             this.chartContainer = new CharticulatorContainer.ChartContainer(
               instance,
@@ -336,7 +353,7 @@ namespace powerbi.extensibility.visual {
                 if (this.selectionManager.hasSelection()) {
                   const ids = this.selectionManager
                     .getSelectionIds()
-                    .map(id => selectionID2RowIndex.get(id));
+                    .map(id => selectionID2RowIndex.get(id)[1]); // FIXME: not testing for table
                   if (arrayEquals(ids, rowIndices)) {
                     alreadySelected = true;
                   }

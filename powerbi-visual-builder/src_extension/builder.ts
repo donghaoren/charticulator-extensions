@@ -25,7 +25,8 @@ import { Specification } from "Charticulator/core";
 
 import {
   SchemaCapabilities,
-  DataRole
+  DataRole,
+  DataViewMapping
 } from "../api/v2.1.0/schema.capabilities";
 
 interface Resources {
@@ -145,16 +146,56 @@ class PowerBIVisualGenerator implements ExportTemplateTarget {
       gitHubUrl: ""
     };
 
-    const dataViewMappingsConditions: { [name: string]: any } = {};
     const objectProperties: { [name: string]: any } = {};
 
-    // TODO: for now, we assume there's only one table
-    const columns = template.tables[0].columns as PowerBIColumn[];
+    const dataViewMappings: DataViewMapping[] = [];
+    const dataRoles: DataRole[] = [];
 
-    for (const column of columns) {
-      // Refine column names
-      column.powerBIName = column.name.replace(/[^0-9a-zA-Z\_]/g, "_");
-      dataViewMappingsConditions[column.powerBIName] = { max: 1 };
+    for (const [index, table] of template.tables.entries()) {
+      const dataViewMappingsConditions: { [name: string]: any } = {};
+      const columns = table.columns as PowerBIColumn[];
+      const prefix = `t${index}_`;
+      dataRoles.push({
+        displayName: "Granularity of " + table.name,
+        description:
+          "Data is aggregated by the column(s) here and passed to the Charticulator-generated visual",
+        name: prefix + "category",
+        kind: "Grouping"
+      });
+      for (const column of columns) {
+        // Refine column names
+        column.powerBIName =
+          prefix + column.name.replace(/[^0-9a-zA-Z\_]/g, "_");
+
+        dataViewMappingsConditions[column.powerBIName] = { max: 1 };
+        dataRoles.push({
+          displayName: column.displayName,
+          name: column.powerBIName,
+          kind: "Measure"
+        });
+      }
+      dataViewMappings.push({
+        conditions: [dataViewMappingsConditions],
+        categorical: {
+          categories: {
+            for: {
+              in: prefix + "category"
+            },
+            dataReductionAlgorithm: {
+              top: {
+                count: 30000 // That's the maximum
+              }
+            }
+          },
+          values: {
+            select: columns.map(column => {
+              return {
+                bind: { to: column.powerBIName }
+              };
+            })
+          }
+        }
+      });
     }
 
     // Populate properties
@@ -178,45 +219,8 @@ class PowerBIVisualGenerator implements ExportTemplateTarget {
     }
 
     const capabilities: SchemaCapabilities = {
-      dataRoles: [
-        {
-          displayName: "Granularity (Level of Detail)",
-          name: "category",
-          kind: "Grouping"
-        },
-        ...columns.map(column => {
-          return {
-            displayName: column.displayName,
-            name: column.powerBIName,
-            kind: "Measure"
-          } as DataRole;
-        })
-      ],
-      dataViewMappings: [
-        {
-          conditions: [dataViewMappingsConditions],
-          categorical: {
-            categories: {
-              for: {
-                in: "category"
-              },
-              dataReductionAlgorithm: {
-                top: {
-                  count: 30000 // That's the maximum
-                }
-              }
-            },
-            values: {
-              select: columns.map(column => {
-                return {
-                  bind: { to: column.powerBIName }
-                };
-              })
-            }
-          }
-        }
-      ],
-
+      dataRoles,
+      dataViewMappings,
       /* Tell PBI to allow for sorting */
       sorting: {
         default: {}
